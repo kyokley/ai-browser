@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# ai-browser — launch and drive the Chromium from $AI_BROWSER_CHROMIUM_CMD via CDP.
+#
+# Usage:
+#   ai-browser start              Launch headless Chromium with a CDP port (idempotent)
+#   ai-browser status             Print browser/CDP status
+#   ai-browser stop               Close the browser (Browser.close)
+#   ai-browser open <url>         Navigate the active tab and wait for load
+#   ai-browser eval '<js>'        Evaluate JavaScript in the active tab
+#   ai-browser text               Print document.body.innerText of the active tab
+#   ai-browser screenshot [path]  Capture a PNG (default: ./screenshot.png)
+#   ai-browser tabs               List open tabs
+#
+# Environment:
+#   AI_BROWSER_CHROMIUM_CMD  Chromium binary (required)
+#   AI_BROWSER_PYTHON_CMD    Python interpreter with websockets (required)
+#   AI_BROWSER_CDP_PORT      DevTools port (default: 9222)
+#   AI_BROWSER_STATE_DIR     Profile/log dir (default: ~/.local/state/ai-browser)
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CDP_PY="${AI_BROWSER_CDP_LIB:-$SCRIPT_DIR/../lib/ai-browser/cdp.py}"
+
+: "${AI_BROWSER_CHROMIUM_CMD:?AI_BROWSER_CHROMIUM_CMD is not set}"
+: "${AI_BROWSER_PYTHON_CMD:?AI_BROWSER_PYTHON_CMD is not set}"
+
+PORT="${AI_BROWSER_CDP_PORT:-9222}"
+STATE_DIR="${AI_BROWSER_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ai-browser}"
+
+cdp() {
+  "$AI_BROWSER_PYTHON_CMD" "$CDP_PY" --port "$PORT" "$@"
+}
+
+browser_up() {
+  cdp ping >/dev/null 2>&1
+}
+
+cmd_start() {
+  if browser_up; then
+    echo "ai-browser: already running on port $PORT"
+    return 0
+  fi
+  mkdir -p "$STATE_DIR/profile"
+  echo "ai-browser: launching $AI_BROWSER_CHROMIUM_CMD on port $PORT"
+  setsid "$AI_BROWSER_CHROMIUM_CMD" \
+    --headless=new \
+    --remote-debugging-port="$PORT" \
+    --user-data-dir="$STATE_DIR/profile" \
+    --no-first-run \
+    --no-default-browser-check \
+    --disable-gpu \
+    about:blank </dev/null >>"$STATE_DIR/chromium.log" 2>&1 &
+  for _ in $(seq 1 50); do
+    if browser_up; then
+      echo "ai-browser: ready on port $PORT"
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "ai-browser: chromium did not come up; see $STATE_DIR/chromium.log" >&2
+  return 1
+}
+
+cmd_status() {
+  if ! browser_up; then
+    echo "ai-browser: not running on port $PORT" >&2
+    return 1
+  fi
+  cdp ping
+}
+
+usage() {
+  grep '^#' "$0" | sed -n '2,12p' | cut -c3-
+}
+
+case "${1:-help}" in
+  start) cmd_start ;;
+  stop) cdp close ;;
+  status) cmd_status ;;
+  open) shift; cdp open "$1" ;;
+  eval) shift; cdp eval "$1" ;;
+  text) cdp text ;;
+  screenshot) shift; cdp screenshot "${1:-screenshot.png}" ;;
+  tabs) cdp tabs ;;
+  help | --help | -h) usage ;;
+  *)
+    echo "unknown command: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
