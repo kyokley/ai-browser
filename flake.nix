@@ -65,7 +65,6 @@
               opencode-wrapped = pkgs.stdenv.mkDerivation {
                 inherit (pkgs.opencode) pname version;
                 src = ./.;
-                dontBuild = true;
                 nativeBuildInputs = with pkgs; [
                   makeWrapper
                 ];
@@ -74,14 +73,20 @@
                 ];
 
                 installPhase = ''
-                  mkdir -p $out/bin
+                  mkdir -p $out/{bin,lib}
+                  cp -r ./bin ./lib $out/
+
+                  touch $out/lib/opencode/.gitignore
+
                   makeWrapper ${pkgs.opencode}/bin/opencode $out/bin/opencode \
-                    --set AI_BROWSER_CHROMIUM_CMD "${pkgs.chromium}/bin/chromium" \
-                    --set AI_BROWSER_PYTHON_CMD "${python-websockets}/bin/python"
+                    --prefix PATH : ${pkgs.lib.makeBinPath [pkgs.chromium python-websockets]} \
+                    --set OPENCODE_CONFIG_DIR "$out/lib/opencode"
+
+                  chmod +x $out/bin/opencode
                 '';
               };
             in
-            {
+            rec {
               inherit opencode-wrapped python-websockets;
               ai-browser = pkgs.stdenv.mkDerivation {
                 pname = "ai-browser";
@@ -94,6 +99,7 @@
                 buildInputs = [
                   pkgs.chromium
                   python-websockets
+                  opencode-wrapped
                 ];
 
                 installPhase = ''
@@ -105,7 +111,50 @@
                     --set AI_BROWSER_PYTHON_CMD "${python-websockets}/bin/python"
                 '';
               };
+              default = ai-browser;
             };
+
+          apps = {
+            ai-browser = {
+              type = "app";
+              program = "${self'.packages.ai-browser}/bin/ai-browser";
+            };
+          };
+
+          # Verify the wrapped opencode exports the bundled chromium and
+          # python-websockets store paths and that both actually work.
+          checks.opencode-wrapped-bundled-tools =
+            pkgs.runCommand "opencode-wrapped-bundled-tools-check"
+              {
+                nativeBuildInputs = [ self'.packages.opencode-wrapped ];
+                expectedChromium = "${pkgs.chromium}/bin/chromium";
+                expectedPython = "${self'.packages.python-websockets}/bin/python";
+              }
+              ''
+                set -euo pipefail
+
+                wrapper="$(command -v opencode)"
+                test -x "$wrapper"
+
+                # Materialize the environment the wrapper hands to opencode.
+                exports="$(grep '^export ' "$wrapper")"
+                eval "$exports"
+
+                test "$AI_BROWSER_CHROMIUM_CMD" = "$expectedChromium"
+                test "$AI_BROWSER_PYTHON_CMD" = "$expectedPython"
+
+                test -x "$AI_BROWSER_CHROMIUM_CMD"
+                test -x "$AI_BROWSER_PYTHON_CMD"
+
+                # The bundled interpreters must actually work.
+                "$AI_BROWSER_PYTHON_CMD" -c 'import websockets'
+                "$AI_BROWSER_CHROMIUM_CMD" --version >/dev/null
+
+                # Smoke-run the wrapper itself.
+                HOME="$TMPDIR" "$wrapper" --version >/dev/null
+
+                touch "$out"
+              '';
         };
     };
 }
