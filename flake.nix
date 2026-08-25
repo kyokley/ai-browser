@@ -45,7 +45,6 @@
           devShells.default = pkgs.mkShell {
             packages = with self'.packages; [
               ai-browser
-              opencode-wrapped
             ];
           };
 
@@ -62,10 +61,10 @@
               python-websockets = pkgs.python3.withPackages (ps: [
                 ps.websockets
               ]);
-              opencode-wrapped = pkgs.stdenv.mkDerivation {
-                inherit (pkgs.opencode) pname version;
+              ai-browser = pkgs.stdenv.mkDerivation {
+                pname = "ai-browser";
+                inherit (pkgs.opencode) version;
                 src = ./.;
-                dontBuild = true;
                 nativeBuildInputs = with pkgs; [
                   makeWrapper
                 ];
@@ -74,38 +73,74 @@
                 ];
 
                 installPhase = ''
-                  mkdir -p $out/bin
-                  makeWrapper ${pkgs.opencode}/bin/opencode $out/bin/opencode \
+                  mkdir -p $out/{bin,lib}
+                  cp -r ./bin ./lib $out/
+
+                  chmod +x $out/lib/opencode/skills/ai-browser/scripts/{cdp.py,launch-browser.sh}
+
+                  touch $out/lib/opencode/.gitignore
+
+                  makeWrapper ${pkgs.opencode}/bin/opencode $out/bin/ai-browser \
                     --set AI_BROWSER_CHROMIUM_CMD "${pkgs.chromium}/bin/chromium" \
-                    --set AI_BROWSER_PYTHON_CMD "${python-websockets}/bin/python"
+                    --set AI_BROWSER_PYTHON_CMD "${python-websockets}/bin/python" \
+                    --prefix PATH : ${
+                      pkgs.lib.makeBinPath [
+                        pkgs.chromium
+                        python-websockets
+                      ]
+                    } \
+                    --set OPENCODE_CONFIG_DIR "$out/lib/opencode"
                 '';
               };
             in
-            {
-              inherit opencode-wrapped python-websockets;
-              ai-browser = pkgs.stdenv.mkDerivation {
-                pname = "ai-browser";
-                version = "0.0.1";
-                src = ./.;
-                dontBuild = true;
-                nativeBuildInputs = with pkgs; [
-                  makeWrapper
-                ];
-                buildInputs = [
-                  pkgs.chromium
-                  python-websockets
-                ];
-
-                installPhase = ''
-                  mkdir -p $out/bin $out/lib/ai-browser
-                  install -m755 bin/ai-browser $out/bin/ai-browser
-                  install -m644 lib/cdp.py $out/lib/ai-browser/cdp.py
-                  wrapProgram $out/bin/ai-browser \
-                    --set AI_BROWSER_CHROMIUM_CMD "${pkgs.chromium}/bin/chromium" \
-                    --set AI_BROWSER_PYTHON_CMD "${python-websockets}/bin/python"
-                '';
-              };
+            rec {
+              inherit ai-browser python-websockets;
+              default = ai-browser;
             };
+
+          apps = {
+            ai-browser = {
+              type = "app";
+              program = "${self'.packages.ai-browser}/bin/ai-browser";
+              meta.description = "AI enhanced web browser";
+            };
+          };
+
+          # Verify the wrapped opencode exports the bundled chromium and
+          # python-websockets store paths and that both actually work.
+          checks.ai-browser =
+            pkgs.runCommand "ai-browser-bundled-tools-check"
+              {
+                nativeBuildInputs = [ self'.packages.ai-browser ];
+                expectedChromium = "${pkgs.chromium}/bin/chromium";
+                expectedPython = "${self'.packages.python-websockets}/bin/python";
+              }
+              ''
+                set -euo pipefail
+
+                # The wrapper is installed as bin/ai-browser.
+                wrapper="$(command -v ai-browser)"
+                test -x "$wrapper"
+
+                # Materialize the environment the wrapper hands to opencode.
+                exports="$(grep '^export ' "$wrapper")"
+                eval "$exports"
+
+                test "$AI_BROWSER_CHROMIUM_CMD" = "$expectedChromium"
+                test "$AI_BROWSER_PYTHON_CMD" = "$expectedPython"
+
+                test -x "$AI_BROWSER_CHROMIUM_CMD"
+                test -x "$AI_BROWSER_PYTHON_CMD"
+
+                # The bundled interpreters must actually work.
+                "$AI_BROWSER_PYTHON_CMD" -c 'import websockets'
+                "$AI_BROWSER_CHROMIUM_CMD" --version >/dev/null
+
+                # Smoke-run the wrapper itself.
+                HOME="$TMPDIR" "$wrapper" --version >/dev/null
+
+                touch "$out"
+              '';
         };
     };
 }

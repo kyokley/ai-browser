@@ -2,7 +2,7 @@
 # ai-browser — launch and drive the Chromium from $AI_BROWSER_CHROMIUM_CMD via CDP.
 #
 # Usage:
-#   ai-browser start              Launch headless Chromium with a CDP port (idempotent)
+#   ai-browser start              Launch headed Chromium with a CDP port (idempotent)
 #   ai-browser status             Print browser/CDP status
 #   ai-browser stop               Close the browser (Browser.close)
 #   ai-browser open <url>         Navigate the active tab and wait for load
@@ -41,9 +41,12 @@ cmd_start() {
     return 0
   fi
   mkdir -p "$STATE_DIR/profile"
+  if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+    echo "ai-browser: headed chromium needs a display; set DISPLAY or WAYLAND_DISPLAY" >&2
+    return 1
+  fi
   echo "ai-browser: launching $AI_BROWSER_CHROMIUM_CMD on port $PORT"
   setsid "$AI_BROWSER_CHROMIUM_CMD" \
-    --headless=new \
     --remote-debugging-port="$PORT" \
     --user-data-dir="$STATE_DIR/profile" \
     --no-first-run \
