@@ -46,15 +46,21 @@ if [ "$(uname -s)" = "Linux" ] && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPL
   exit 1
 fi
 
-# setsid + </dev/null + redirects: fully detach so shell-tool timeouts
-# cannot kill the browser's process group.
+# Fully detach so shell-tool timeouts cannot kill the browser process group.
+# setsid (Linux) creates a new session; nohup (macOS / fallback) prevents SIGHUP.
+DETACH_CMD=""
+if command -v setsid >/dev/null 2>&1; then
+  DETACH_CMD="setsid"
+else
+  DETACH_CMD="nohup"
+fi
 if [ "$IS_FIREFOX" = "1" ]; then
-  setsid "$BROWSER" \
+  $DETACH_CMD "$BROWSER" \
     --remote-debugging-port "$PORT" \
     -profile "$PROFILE" \
     about:blank </dev/null >>"$LOG" 2>&1 &
 else
-  setsid "$BROWSER" \
+  $DETACH_CMD "$BROWSER" \
     --remote-debugging-port="$PORT" \
     --user-data-dir="$PROFILE" \
     --no-first-run \

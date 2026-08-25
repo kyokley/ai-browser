@@ -71,13 +71,21 @@ cmd_start() {
     return 1
   fi
   echo "ai-browser: launching $AI_BROWSER_CMD on port $PORT"
+  # Fully detach so shell-tool timeouts cannot kill the browser process group.
+  # setsid (Linux) creates a new session; nohup (macOS / fallback) prevents SIGHUP.
+  DETACH_CMD=""
+  if command -v setsid >/dev/null 2>&1; then
+    DETACH_CMD="setsid"
+  else
+    DETACH_CMD="nohup"
+  fi
   if [ "$IS_FIREFOX" -eq 1 ]; then
-    setsid "$AI_BROWSER_CMD" \
+    $DETACH_CMD "$AI_BROWSER_CMD" \
       --remote-debugging-port "$PORT" \
       -profile "$STATE_DIR/profile" \
       about:blank </dev/null >>"$STATE_DIR/browser.log" 2>&1 &
   else
-    setsid "$AI_BROWSER_CMD" \
+    $DETACH_CMD "$AI_BROWSER_CMD" \
       --remote-debugging-port="$PORT" \
       --user-data-dir="$STATE_DIR/profile" \
       --no-first-run \
