@@ -61,7 +61,7 @@
               python-websockets = pkgs.python3.withPackages (ps: [
                 ps.websockets
               ]);
-              ai-browser = pkgs.stdenv.mkDerivation {
+              ai-browser-pkg = pkgs.stdenv.mkDerivation {
                 pname = "ai-browser";
                 inherit (pkgs.opencode) version;
                 src = ./.;
@@ -94,16 +94,28 @@
               };
             in
             rec {
-              inherit ai-browser python-websockets;
+              inherit python-websockets;
+              ai-browser = ai-browser-pkg;
               default = ai-browser;
             };
 
-          apps = {
+          apps = let
+            ai-browser-app = pkgs.writeShellApplication {
+              name = "ai-browser";
+              runtimeInputs = [
+                self'.packages.ai-browser
+              ];
+              text = ''
+                exec ${self'.packages.ai-browser}/bin/ai-browser --prompt "open a chromium browser"
+              '';
+            };
+            in rec {
             ai-browser = {
               type = "app";
-              program = "${self'.packages.ai-browser}/bin/ai-browser";
+              program = "${ai-browser-app}/bin/ai-browser";
               meta.description = "AI enhanced web browser";
             };
+            default = ai-browser;
           };
 
           # Verify the wrapped opencode exports the bundled chromium and
