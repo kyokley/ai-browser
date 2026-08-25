@@ -1,16 +1,21 @@
 ---
 name: ai-browser
-description: Drive a real Chromium browser over the Chrome DevTools Protocol (CDP) for any web task — opening URLs, scraping rendered content, taking screenshots, evaluating JavaScript, and smoke-testing web apps. Use this skill whenever the user asks to open, browse, or visit a URL; scrape or extract a page's content; screenshot or render a site; check what a JS-heavy page actually displays; automate a browser; or test a local web server. Prefer it even when the user doesn't say "browser" and even when curl might seem enough, because a real browser executes JavaScript, handles cookies, and sees the rendered DOM. Uses $AI_BROWSER_CHROMIUM_CMD / $AI_BROWSER_PYTHON_CMD when set (the opencode-wrapped environment), otherwise falls back to any installed chromium/chrome and python3.
+description: Drive a real Chromium browser over the Chrome DevTools Protocol (CDP) for any web task — opening URLs, scraping rendered content, taking screenshots, evaluating JavaScript, and smoke-testing web apps. Use this skill whenever the user asks to open, browse, or visit a URL; scrape or extract a page's content; screenshot or render a site; check what a JS-heavy page actually displays; automate a browser; or test a local web server. Prefer it even when the user doesn't say "browser" and even when curl might seem enough, because a real browser executes JavaScript, handles cookies, and sees the rendered DOM. Uses $AI_BROWSER_CMD / $AI_BROWSER_PYTHON_CMD when set (the opencode-wrapped environment), otherwise falls back to any installed chromium/chrome and python3. Firefox can be launched but uses WebDriver BiDi instead of CDP — only Chromium supports the full automation command set (open, eval, text, screenshot, tabs).
 ---
 
-# ai-browser — drive Chromium over CDP
+# ai-browser — drive a browser over CDP
+
+> **Firefox:** Only Chromium supports CDP automation (open, eval, text,
+> screenshot, tabs). Firefox can be launched via `ai-browser start` but the
+> automation commands are not available. Firefox uses WebDriver BiDi protocol
+> instead of CDP.
 
 ## Why a real browser
 
 `curl` only sees static HTML. Most modern pages build their content with
 JavaScript, so fetching the HTML often returns an empty shell. Launching a
-real, headed Chromium and speaking CDP to it gives you the rendered DOM,
-executed JS, screenshots, and cookies — the same view a user gets.
+real, headed browser (Chromium or Firefox) and speaking CDP to it gives you the
+rendered DOM, executed JS, screenshots, and cookies — the same view a user gets.
 
 ## Quick start
 
@@ -40,11 +45,51 @@ bash scripts/launch-browser.sh                 # idempotent; prints "ready on :9
 `open` waits for the page load event before returning, so follow-up commands
 see the finished page.
 
+## Firefox-specific behavior
+
+Firefox uses the **WebDriver BiDi** protocol instead of Chrome DevTools Protocol (CDP). This means:
+
+- **No CDP automation:** The `cdp.py` commands (`open`, `eval`, `text`, `screenshot`, `tabs`) do not work with Firefox.
+- **No `/json/version` endpoint:** Firefox's debug port doesn't expose the CDP HTTP endpoints.
+- **Different launch flags:** Firefox uses `--remote-debugging-port` (space-separated) instead of `--remote-debugging-port=` (equals-separated).
+- **Profile flag:** Firefox uses `-profile` instead of `--user-data-dir`.
+
+### Launching Firefox
+
+**macOS:**
+```bash
+open -a Firefox
+```
+
+**Linux (with X11/Wayland):**
+```bash
+firefox --remote-debugging-port 9222 -profile /tmp/firefox-profile about:blank &
+```
+
+**Verification:**
+```bash
+# Check if Firefox is running
+ps aux | grep -i firefox | grep -v grep
+
+# Check debug port (note: /json/version won't work with Firefox)
+curl -sf http://127.0.0.1:9222/json/version || echo "Firefox debug port not responding to CDP"
+```
+
+### Firefox limitations
+
+- Cannot automate page interactions via CDP
+- Cannot evaluate JavaScript in pages
+- Cannot take screenshots programmatically
+- Cannot extract page text or DOM content
+- Can only launch/browse/navigate manually
+
+For CDP automation, use Chromium-based browsers (Chrome, Edge, Brave, etc.).
+
 ## Environment resolution
 
 | What | Preferred | Fallback |
 |------|-----------|----------|
-| Browser binary | `$AI_BROWSER_CHROMIUM_CMD` | `chromium`, `chromium-browser`, `google-chrome-stable`, `google-chrome` on PATH |
+| Browser binary | `$AI_BROWSER_CMD` (preferred) | `$AI_BROWSER_CHROMIUM_CMD` (fallback); or `chromium`, `chromium-browser`, `google-chrome-stable`, `google-chrome`, `firefox` on PATH |
 | Python + websockets | `$AI_BROWSER_PYTHON_CMD` | `python3`; if `import websockets` fails, make a venv in `/tmp` and pip-install it |
 | CDP port | `$AI_BROWSER_CDP_PORT` | `9222` |
 
@@ -59,16 +104,20 @@ something unusual.
   kill the whole process group when a command times out. A browser launched
   without detaching dies silently mid-session and every later CDP call fails.
   This exact failure happened in practice; don't simplify the flags away.
+- **Browser-aware flags.** Chromium and Firefox have different CLI flags.
+  The script detects the browser type and applies the correct set:
+  Chromium gets `--user-data-dir`, `--no-first-run`, `--no-default-browser-check`,
+  `--disable-gpu`; Firefox gets `-profile` and a space-separated `--remote-debugging-port`.
 - **Headed, not headless.** Always launch with a visible window — never add
   `--headless`. Headed windows make failures visible to the user and keep the
   browser's behavior identical to a real session. This requires a display:
   the script errors out clearly when neither `DISPLAY` nor `WAYLAND_DISPLAY`
-  is set.
+  is set (Linux only — macOS doesn't need these variables).
 - **Idempotency.** If `/json/version` already answers on the port, the script
   reuses the running browser instead of spawning a second one. Reuse first;
   only launch when nothing answers.
 - **Fresh temp profile (`mktemp -d`).** A profile directory locked by another
-  Chromium instance prevents startup entirely.
+  browser instance prevents startup entirely.
 - **Readiness polling.** The debug port takes a moment to appear; poll
   `http://127.0.0.1:$PORT/json/version` until it responds instead of sleeping
   a fixed time.
@@ -148,3 +197,5 @@ and job names from `a[href*="/job/"]`.
   running if more requests will come soon; startup costs ~1 s.
 - Don't assume the tab is still where you left it — check `location.href`
   before reasoning about "the current page"; users and other agents move it.
+- **Firefox users:** Remember that Firefox doesn't support CDP automation. Use
+  Chromium for any automated tasks. Firefox is only useful for manual browsing.

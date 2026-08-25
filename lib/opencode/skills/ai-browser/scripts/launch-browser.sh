@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Idempotently launch a CDP-enabled headed Chromium.
+# Idempotently launch a CDP-enabled headed browser (Chromium or Firefox).
 # Usage: launch-browser.sh [port]
-# Honors AI_BROWSER_CHROMIUM_CMD, AI_BROWSER_CDP_PORT.
+# Honors AI_BROWSER_CMD, AI_BROWSER_CHROMIUM_CMD, AI_BROWSER_CDP_PORT.
 set -euo pipefail
 
 PORT="${1:-${AI_BROWSER_CDP_PORT:-9222}}"
@@ -16,38 +16,52 @@ if up; then
   exit 0
 fi
 
-CHROMIUM="${AI_BROWSER_CHROMIUM_CMD:-}"
-if [ -z "$CHROMIUM" ]; then
-  for candidate in chromium chromium-browser google-chrome-stable google-chrome chrome; do
+BROWSER="${AI_BROWSER_CMD:-${AI_BROWSER_CHROMIUM_CMD:-}}"
+if [ -z "$BROWSER" ]; then
+  for candidate in firefox chromium chromium-browser google-chrome-stable google-chrome chrome; do
     if command -v "$candidate" >/dev/null 2>&1; then
-      CHROMIUM="$(command -v "$candidate")"
+      BROWSER="$(command -v "$candidate")"
       break
     fi
   done
 fi
-if [ -z "$CHROMIUM" ]; then
-  echo "error: no chromium found; set AI_BROWSER_CHROMIUM_CMD" >&2
+if [ -z "$BROWSER" ]; then
+  echo "error: no browser found; set AI_BROWSER_CMD or AI_BROWSER_CHROMIUM_CMD" >&2
   exit 1
 fi
 
-PROFILE="$(mktemp -d /tmp/ai-browser-profile.XXXXXX)"
-LOG="$(mktemp /tmp/ai-browser-chromium.XXXXXX.log)"
+# Detect browser type from the command name.
+case "$(basename "$BROWSER")" in
+  *firefox*) IS_FIREFOX=1 ;;
+  *) IS_FIREFOX=0 ;;
+esac
 
-# Headed mode needs something to draw on.
-if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
-  echo "error: headed chromium needs a display; set DISPLAY or WAYLAND_DISPLAY" >&2
+PROFILE="$(mktemp -d /tmp/ai-browser-profile.XXXXXX)"
+LOG="$(mktemp /tmp/ai-browser-browser.XXXXXX.log)"
+
+# Headed mode needs something to draw on — but only on Linux.
+# macOS uses its own windowing system and never requires DISPLAY / WAYLAND_DISPLAY.
+if [ "$(uname -s)" = "Linux" ] && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+  echo "error: headed browser on Linux needs a display; set DISPLAY or WAYLAND_DISPLAY" >&2
   exit 1
 fi
 
 # setsid + </dev/null + redirects: fully detach so shell-tool timeouts
 # cannot kill the browser's process group.
-setsid "$CHROMIUM" \
-  --remote-debugging-port="$PORT" \
-  --user-data-dir="$PROFILE" \
-  --no-first-run \
-  --no-default-browser-check \
-  --disable-gpu \
-  about:blank </dev/null >>"$LOG" 2>&1 &
+if [ "$IS_FIREFOX" = "1" ]; then
+  setsid "$BROWSER" \
+    --remote-debugging-port "$PORT" \
+    -profile "$PROFILE" \
+    about:blank </dev/null >>"$LOG" 2>&1 &
+else
+  setsid "$BROWSER" \
+    --remote-debugging-port="$PORT" \
+    --user-data-dir="$PROFILE" \
+    --no-first-run \
+    --no-default-browser-check \
+    --disable-gpu \
+    about:blank </dev/null >>"$LOG" 2>&1 &
+fi
 
 for _ in $(seq 1 50); do
   if up; then
@@ -57,5 +71,5 @@ for _ in $(seq 1 50); do
   sleep 0.2
 done
 
-echo "error: chromium did not come up on :${PORT}; log: $LOG" >&2
+echo "error: browser did not come up on :${PORT}; log: $LOG" >&2
 exit 1

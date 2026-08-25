@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# ai-browser — launch and drive the Chromium from $AI_BROWSER_CHROMIUM_CMD via CDP.
+# ai-browser — launch and drive a browser from $AI_BROWSER_CMD via CDP.
 #
 # Usage:
-#   ai-browser start              Launch headed Chromium with a CDP port (idempotent)
+#   ai-browser start              Launch headed browser with a CDP port (idempotent)
 #   ai-browser status             Print browser/CDP status
-#   ai-browser stop               Close the browser (Browser.close)
+#   ai-browser stop               Close the browser
 #   ai-browser open <url>         Navigate the active tab and wait for load
 #   ai-browser eval '<js>'        Evaluate JavaScript in the active tab
 #   ai-browser text               Print document.body.innerText of the active tab
@@ -12,17 +12,38 @@
 #   ai-browser tabs               List open tabs
 #
 # Environment:
-#   AI_BROWSER_CHROMIUM_CMD  Chromium binary (required)
-#   AI_BROWSER_PYTHON_CMD    Python interpreter with websockets (required)
-#   AI_BROWSER_CDP_PORT      DevTools port (default: 9222)
-#   AI_BROWSER_STATE_DIR     Profile/log dir (default: ~/.local/state/ai-browser)
+#   AI_BROWSER_CMD            Browser binary (preferred; chromium or firefox)
+#   AI_BROWSER_CHROMIUM_CMD   Chromium binary (fallback for AI_BROWSER_CMD)
+#   AI_BROWSER_PYTHON_CMD     Python interpreter with websockets (required for Chromium)
+#   AI_BROWSER_CDP_PORT       DevTools port (default: 9222)
+#   AI_BROWSER_STATE_DIR      Profile/log dir (default: ~/.local/state/ai-browser)
+#
+# Note: Firefox does not support CDP automation.  Only 'start', 'stop',
+# and 'status' are available when using Firefox.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CDP_PY="${AI_BROWSER_CDP_LIB:-$SCRIPT_DIR/../lib/ai-browser/cdp.py}"
 
-: "${AI_BROWSER_CHROMIUM_CMD:?AI_BROWSER_CHROMIUM_CMD is not set}"
-: "${AI_BROWSER_PYTHON_CMD:?AI_BROWSER_PYTHON_CMD is not set}"
+if [ -n "${AI_BROWSER_CMD:-}" ]; then
+  AI_BROWSER_CMD="$AI_BROWSER_CMD"
+elif [ -n "${AI_BROWSER_CHROMIUM_CMD:-}" ]; then
+  AI_BROWSER_CMD="$AI_BROWSER_CHROMIUM_CMD"
+else
+  echo "ai-browser: neither AI_BROWSER_CMD nor AI_BROWSER_CHROMIUM_CMD is set" >&2
+  exit 1
+fi
+
+# Detect Firefox — Firefox does not support CDP automation via cdp.py.
+case "$AI_BROWSER_CMD" in
+  *firefox*) IS_FIREFOX=1 ;;
+  *) IS_FIREFOX=0 ;;
+esac
+
+# Only require Python for CDP-capable browsers (Chromium).
+if [ "$IS_FIREFOX" -eq 0 ]; then
+  : "${AI_BROWSER_PYTHON_CMD:?AI_BROWSER_PYTHON_CMD is not set}"
+fi
 
 PORT="${AI_BROWSER_CDP_PORT:-9222}"
 STATE_DIR="${AI_BROWSER_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ai-browser}"
@@ -32,7 +53,11 @@ cdp() {
 }
 
 browser_up() {
-  cdp ping >/dev/null 2>&1
+  if [ "$IS_FIREFOX" -eq 1 ]; then
+    curl -sf --max-time 1 "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1
+  else
+    cdp ping >/dev/null 2>&1
+  fi
 }
 
 cmd_start() {
@@ -41,18 +66,25 @@ cmd_start() {
     return 0
   fi
   mkdir -p "$STATE_DIR/profile"
-  if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
-    echo "ai-browser: headed chromium needs a display; set DISPLAY or WAYLAND_DISPLAY" >&2
+  if [ "$(uname -s)" = "Linux" ] && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+    echo "ai-browser: headed browser on Linux needs a display; set DISPLAY or WAYLAND_DISPLAY" >&2
     return 1
   fi
-  echo "ai-browser: launching $AI_BROWSER_CHROMIUM_CMD on port $PORT"
-  setsid "$AI_BROWSER_CHROMIUM_CMD" \
-    --remote-debugging-port="$PORT" \
-    --user-data-dir="$STATE_DIR/profile" \
-    --no-first-run \
-    --no-default-browser-check \
-    --disable-gpu \
-    about:blank </dev/null >>"$STATE_DIR/chromium.log" 2>&1 &
+  echo "ai-browser: launching $AI_BROWSER_CMD on port $PORT"
+  if [ "$IS_FIREFOX" -eq 1 ]; then
+    setsid "$AI_BROWSER_CMD" \
+      --remote-debugging-port "$PORT" \
+      -profile "$STATE_DIR/profile" \
+      about:blank </dev/null >>"$STATE_DIR/browser.log" 2>&1 &
+  else
+    setsid "$AI_BROWSER_CMD" \
+      --remote-debugging-port="$PORT" \
+      --user-data-dir="$STATE_DIR/profile" \
+      --no-first-run \
+      --no-default-browser-check \
+      --disable-gpu \
+      about:blank </dev/null >>"$STATE_DIR/browser.log" 2>&1 &
+  fi
   for _ in $(seq 1 50); do
     if browser_up; then
       echo "ai-browser: ready on port $PORT"
@@ -60,8 +92,17 @@ cmd_start() {
     fi
     sleep 0.2
   done
-  echo "ai-browser: chromium did not come up; see $STATE_DIR/chromium.log" >&2
+  echo "ai-browser: browser did not come up; see $STATE_DIR/browser.log" >&2
   return 1
+}
+
+cmd_stop() {
+  if [ "$IS_FIREFOX" -eq 1 ]; then
+    pkill -f "firefox.*--remote-debugging-port=$PORT" 2>/dev/null || true
+    echo "ai-browser: Firefox stopped"
+  else
+    cdp close
+  fi
 }
 
 cmd_status() {
@@ -69,7 +110,17 @@ cmd_status() {
     echo "ai-browser: not running on port $PORT" >&2
     return 1
   fi
-  cdp ping
+  if [ "$IS_FIREFOX" -eq 1 ]; then
+    echo "ai-browser: Firefox running on port $PORT"
+  else
+    cdp ping
+  fi
+}
+
+unsupported_cmd() {
+  echo "ai-browser: '$1' is not supported with Firefox" >&2
+  echo "Only 'start', 'stop', and 'status' are available." >&2
+  exit 1
 }
 
 usage() {
@@ -78,13 +129,28 @@ usage() {
 
 case "${1:-help}" in
   start) cmd_start ;;
-  stop) cdp close ;;
+  stop) cmd_stop ;;
   status) cmd_status ;;
-  open) shift; cdp open "$1" ;;
-  eval) shift; cdp eval "$1" ;;
-  text) cdp text ;;
-  screenshot) shift; cdp screenshot "${1:-screenshot.png}" ;;
-  tabs) cdp tabs ;;
+  open)
+    if [ "$IS_FIREFOX" -eq 1 ]; then unsupported_cmd "open"; fi
+    shift; cdp open "$1"
+    ;;
+  eval)
+    if [ "$IS_FIREFOX" -eq 1 ]; then unsupported_cmd "eval"; fi
+    shift; cdp eval "$1"
+    ;;
+  text)
+    if [ "$IS_FIREFOX" -eq 1 ]; then unsupported_cmd "text"; fi
+    cdp text
+    ;;
+  screenshot)
+    if [ "$IS_FIREFOX" -eq 1 ]; then unsupported_cmd "screenshot"; fi
+    shift; cdp screenshot "${1:-screenshot.png}"
+    ;;
+  tabs)
+    if [ "$IS_FIREFOX" -eq 1 ]; then unsupported_cmd "tabs"; fi
+    cdp tabs
+    ;;
   help | --help | -h) usage ;;
   *)
     echo "unknown command: $1" >&2
