@@ -52,10 +52,14 @@ see the finished page.
 
 ```bash
 # Launch Firefox with remote debugging
+# IMPORTANT: Always create a FRESH profile directory first. A stale or locked
+# profile makes Firefox die silently at startup (empty log, no process) — this
+# exact failure happened in practice.
 # IMPORTANT: Use nohup to detach Firefox from the shell. If you just use `&`,
 # the bash tool's timeout will kill the entire process group — including Firefox —
 # and the BiDi connection will fail with "Connection refused" on the next command.
-nohup /Applications/Firefox.app/Contents/MacOS/firefox --remote-debugging-port 9222 > /tmp/firefox-debug.log 2>&1 &
+rm -rf /tmp/firefox-profile && mkdir -p /tmp/firefox-profile
+nohup /Applications/Firefox.app/Contents/MacOS/firefox --remote-debugging-port 9222 -profile /tmp/firefox-profile about:blank > /tmp/firefox-debug.log 2>&1 &
 sleep 4
 grep -i "WebDriver BiDi listening" /tmp/firefox-debug.log  # confirm it's ready
 
@@ -106,19 +110,26 @@ Pass `--remote-debugging-port` to start the Remote Agent. The HTTPD binds to
 loopback only (`127.0.0.1`) and serves WebSocket connections. No authentication
 or encryption is provided.
 
+**Always launch with a fresh profile.** A stale or locked profile directory
+(e.g. left over from a previous run, or locked by another Firefox instance)
+prevents startup entirely — Firefox exits silently with an empty stderr log.
+Delete and recreate the profile directory before every launch.
+
 **Note:** `scripts/launch-browser.sh` polls `/json/version` for readiness,
 which is CDP-specific and returns 404 on Firefox. Launch Firefox manually
 or use the commands below.
 
 **macOS:**
 ```bash
-nohup /Applications/Firefox.app/Contents/MacOS/firefox --remote-debugging-port 9222 > /tmp/firefox-debug.log 2>&1 &
+rm -rf /tmp/firefox-profile && mkdir -p /tmp/firefox-profile
+nohup /Applications/Firefox.app/Contents/MacOS/firefox --remote-debugging-port 9222 -profile /tmp/firefox-profile about:blank > /tmp/firefox-debug.log 2>&1 &
 sleep 4
 grep -i "WebDriver BiDi listening" /tmp/firefox-debug.log
 ```
 
 **Linux:**
 ```bash
+rm -rf /tmp/firefox-profile && mkdir -p /tmp/firefox-profile
 nohup firefox --remote-debugging-port 9222 -profile /tmp/firefox-profile about:blank > /tmp/firefox-debug.log 2>&1 &
 sleep 4
 grep -i "WebDriver BiDi listening" /tmp/firefox-debug.log
@@ -126,7 +137,8 @@ grep -i "WebDriver BiDi listening" /tmp/firefox-debug.log
 
 **Windows (PowerShell):**
 ```powershell
-& "C:\Program Files\Mozilla Firefox\firefox.exe" --remote-debugging-port 9222
+Remove-Item -Recurse -Force "$env:TEMP\firefox-profile" -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force "$env:TEMP\firefox-profile" | Out-Null
+& "C:\Program Files\Mozilla Firefox\firefox.exe" --remote-debugging-port 9222 -profile "$env:TEMP\firefox-profile"
 ```
 
 ### Discovery endpoint
@@ -401,7 +413,8 @@ and job names from `a[href*="/job/"]`.
 
 ## Gotchas checklist
 
-- **Firefox launch killed by bash timeout?** The bash tool kills the *entire process group* when a command times out. A bare `&` keeps Firefox in the same group, so it dies silently and the next BiDi call gets `ConnectionRefusedError: [Errno 61] Connect call failed`. Always use `nohup` to fully detach Firefox: `nohup /Applications/Firefox.app/Contents/MacOS/firefox --remote-debugging-port 9222 > /tmp/firefox-debug.log 2>&1 &`. The same issue affects Chromium when launched outside `launch-browser.sh`.
+- **Firefox launch killed by bash timeout?** The bash tool kills the *entire process group* when a command times out. A bare `&` keeps Firefox in the same group, so it dies silently and the next BiDi call gets `ConnectionRefusedError: [Errno 61] Connect call failed`. Always use `nohup` to fully detach Firefox: `nohup firefox --remote-debugging-port 9222 -profile /tmp/firefox-profile about:blank > /tmp/firefox-debug.log 2>&1 &`. The same issue affects Chromium when launched outside `launch-browser.sh`.
+- **Firefox dies silently at launch (empty log, no process)?** A stale or locked profile directory prevents startup entirely. ALWAYS delete and recreate the profile before launching: `rm -rf /tmp/firefox-profile && mkdir -p /tmp/firefox-profile`, then pass `-profile /tmp/firefox-profile`. This exact failure happened in practice — reusing an existing profile dir made Firefox exit immediately with an empty stderr log; recreating the profile fixed it.
 - Browser died? `cdp.py ping` first (Chromium); for Firefox, check `ps aux | grep firefox` or look for the `WebDriver BiDi listening` message in the stderr log.
 - Multiple agents/tasks sharing a machine: give each its own port via
   `AI_BROWSER_CDP_PORT`.
