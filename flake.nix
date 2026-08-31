@@ -106,7 +106,7 @@
                 self'.packages.ai-browser
               ];
               text = ''
-                exec ${self'.packages.ai-browser}/bin/ai-browser --prompt "open a chromium browser"
+                exec ${self'.packages.ai-browser}/bin/ai-browser --prompt "$@"
               '';
             };
             in rec {
