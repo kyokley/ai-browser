@@ -78,6 +78,10 @@
 
                   chmod +x $out/lib/opencode/skills/ai-browser/scripts/{cdp.py,launch-browser.sh}
 
+                  substituteInPlace $out/lib/opencode/AGENTS.md \
+                    --replace-fail ./lib/opencode/skills/ai-browser/scripts/launch-browser.sh \
+                    $out/lib/opencode/skills/ai-browser/scripts/launch-browser.sh
+
                   touch $out/lib/opencode/.gitignore
 
                   makeWrapper ${pkgs.opencode}/bin/opencode $out/bin/ai-browser \
@@ -99,24 +103,26 @@
               default = ai-browser;
             };
 
-          apps = let
-            ai-browser-app = pkgs.writeShellApplication {
-              name = "ai-browser";
-              runtimeInputs = [
-                self'.packages.ai-browser
-              ];
-              text = ''
-                exec ${self'.packages.ai-browser}/bin/ai-browser --prompt "$@"
-              '';
+          apps =
+            let
+              ai-browser-app = pkgs.writeShellApplication {
+                name = "ai-browser";
+                runtimeInputs = [
+                  self'.packages.ai-browser
+                ];
+                text = ''
+                  exec ${self'.packages.ai-browser}/bin/ai-browser --prompt "$@"
+                '';
+              };
+            in
+            rec {
+              ai-browser = {
+                type = "app";
+                program = "${ai-browser-app}/bin/ai-browser";
+                meta.description = "AI enhanced web browser";
+              };
+              default = ai-browser;
             };
-            in rec {
-            ai-browser = {
-              type = "app";
-              program = "${ai-browser-app}/bin/ai-browser";
-              meta.description = "AI enhanced web browser";
-            };
-            default = ai-browser;
-          };
 
           # Verify the wrapped opencode exports the bundled chromium and
           # python-websockets store paths and that both actually work.
